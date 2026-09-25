@@ -1,0 +1,60 @@
+[project]
+name = "propcall"
+version = "0.1.0"
+description = "PropCall monorepo root (uv workspace). Not a package itself."
+requires-python = ">=3.11"
+dependencies = ["propcall-api", "propcall-voice", "propcall-worker", "propcall-shared"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4",
+    "pytest-asyncio>=1.0",
+    "httpx>=0.28",
+    "ruff>=0.13",
+    "black>=25.1",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["apps/api", "apps/voice", "apps/worker", "packages/shared"]
+
+[tool.uv.sources]
+propcall-api = { workspace = true }
+propcall-voice = { workspace = true }
+propcall-worker = { workspace = true }
+propcall-shared = { workspace = true }
+
+# ---------- tooling ----------
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+extend-exclude = "apps/dashboard"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["apps/dashboard", "audio_cache"]
+
+[tool.ruff.lint]
+# E/W pycodestyle, F pyflakes, I isort, UP pyupgrade, B bugbear, ASYNC async pitfalls, S bandit-lite
+select = ["E", "W", "F", "I", "UP", "B", "ASYNC", "S", "RUF"]
+ignore = ["E501"] # black owns line length
+
+[tool.ruff.lint.per-file-ignores]
+# tests: asserts, fake secrets, parsing our own XML responses
+"**/tests/**" = ["S101", "S105", "S314"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's dependency-injection idiom
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.params.Depends"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["api", "voice", "worker", "shared"]
+
+[tool.pytest.ini_options]
+testpaths = ["packages/shared/tests", "apps/api/tests", "apps/voice/tests", "apps/worker/tests"]
+addopts = "-ra --import-mode=importlib"
+asyncio_mode = "auto"

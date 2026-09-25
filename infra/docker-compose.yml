@@ -1,0 +1,88 @@
+# Production-ish stack for the Mumbai VPS. Dashboard runs on Vercel, DB on Supabase.
+#   docker compose -f infra/docker-compose.yml --env-file .env up -d --build
+name: propcall
+
+x-python-app: &python-app
+  env_file: ../.env
+  restart: unless-stopped
+  depends_on:
+    redis:
+      condition: service_healthy
+  environment:
+    REDIS_URL: redis://redis:6379/0
+    AUDIO_CACHE_DIR: /app/audio_cache
+
+services:
+  api:
+    <<: *python-app
+    build:
+      context: ..
+      dockerfile: infra/python.Dockerfile
+      args: { APP: api }
+    command: ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]
+    expose: ["8000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  voice:
+    <<: *python-app
+    build:
+      context: ..
+      dockerfile: infra/python.Dockerfile
+      args: { APP: voice }
+    command: ["uvicorn", "voice.main:app", "--host", "0.0.0.0", "--port", "8765", "--proxy-headers", "--forwarded-allow-ips", "*"]
+    expose: ["8765"]
+    volumes:
+      - ../audio_cache:/app/audio_cache:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8765/healthz')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  worker:
+    <<: *python-app
+    build:
+      context: ..
+      dockerfile: infra/python.Dockerfile
+      args: { APP: worker }
+    command: ["arq", "worker.main.WorkerSettings"]
+    volumes:
+      - ../audio_cache:/app/audio_cache
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports: ["127.0.0.1:6379:6379"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on: [api, voice]
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  redis-data:
+  caddy-data:
+  caddy-config:

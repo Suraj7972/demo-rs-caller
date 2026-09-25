@@ -1,0 +1,28 @@
+{
+	email {$ACME_EMAIL}
+}
+
+# Single hostname, automatic HTTPS (Let's Encrypt).
+#   wss://{$DOMAIN}/ws/*    -> voice (Plivo Audio Stream websocket)
+#   https://{$DOMAIN}/plivo/* -> voice (answer XML, call status, transfer)
+#   everything else         -> api (REST + webhooks)
+{$DOMAIN} {
+	encode zstd gzip
+
+	@voice path /ws/* /voice/* /plivo/*
+	handle @voice {
+		# Caddy upgrades websockets transparently; disable buffering for streaming audio.
+		reverse_proxy voice:8765 {
+			flush_interval -1
+		}
+	}
+
+	handle {
+		reverse_proxy api:8000
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

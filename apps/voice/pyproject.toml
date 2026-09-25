@@ -1,0 +1,22 @@
+[project]
+name = "propcall-voice"
+version = "0.1.0"
+description = "Pipecat voice bot: telephony websocket, STT -> LLM -> TTS pipeline, call tools."
+requires-python = ">=3.11"
+dependencies = [
+    "propcall-shared",
+    "pipecat-ai[anthropic,sarvam,silero,websocket]>=1.11",
+    "fastapi>=0.116",
+    "uvicorn[standard]>=0.35",
+    "python-multipart>=0.0.32",
+]
+
+[tool.uv.sources]
+propcall-shared = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["voice"]

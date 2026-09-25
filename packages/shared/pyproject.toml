@@ -1,0 +1,24 @@
+[project]
+name = "propcall-shared"
+version = "0.1.0"
+description = "Shared code: config, db models, prompt builder, provider interfaces."
+requires-python = ">=3.11"
+dependencies = [
+    "asyncpg>=0.31.0",
+    "cryptography>=50.0.1",
+    "plivo>=4.62.0",
+    "pydantic>=2.11",
+    "pydantic-settings>=2.10",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# This directory *is* the `shared` import package (packages/shared/config.py -> shared.config).
+[tool.hatch.build.targets.wheel]
+only-include = ["__init__.py", "config.py", "db", "providers"]
+dev-mode-dirs = [".."]
+
+[tool.hatch.build.targets.wheel.sources]
+"" = "shared"
