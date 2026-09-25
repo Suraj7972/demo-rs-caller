@@ -1,0 +1,72 @@
+A call from start to end
+
+Here's exactly what happens when you run make test-call to=+91XXXXXXXXXX.
+
+Step 1: You start the call → apps/voice/test_call.py
+main() reads your .env through get_settings() and checks that the Plivo keys, Sarvam key and caller ID exist.
+It checks the number is in +91… format (E164_RE).
+_check_tunnel() calls PUBLIC_BASE_URL/healthz to make sure your ngrok/cloudflared tunnel reaches the voice server.
+build_plivo() (in voice/deps.py) creates a PlivoProvider.
+plivo.place_call(...) asks Plivo to dial the number, telling it: "when they answer, fetch /plivo/answer?mode=test&lang=hi", and "when the call ends, tell /plivo/status". The call is capped at 180 seconds.
+The script prints the masked number and exits. Everything after this happens in the voice server, not in this script.
+Step 2: Plivo dials → packages/shared/providers/telephony.py
+PlivoProvider.place_call() validates the numbers, adds the metadata (mode, lang) to the answer URL with _with_query(), and calls Plivo's SDK calls.create.
+The Plivo SDK is not async, so _sdk() runs it in a background thread (asyncio.to_thread) so it doesn't freeze live calls.
+Step 3: The customer picks up → apps/voice/voice/plivo_routes.py → plivo_answer()
+Plivo sends a POST to /plivo/answer.
+verified_form() runs first. It checks the X-Plivo-Signature-V3 header using your Auth Token, so nobody else can fake a Plivo request. It uses the public URL (_public_url()) because behind ngrok/Caddy the server sees an internal address.
+It reads CallUUID, direction, and lang (_language() falls back to Hindi).
+stream_token.mint() (in voice/stream_token.py) makes a secret token valid for 120 seconds, tied to this CallUUID.
+stream_xml() builds XML that tells Plivo: "open a two-way audio stream (µ-law, 8 kHz) to wss://…/ws/plivo?token=…&lang=hi&mode=test".
+Plivo receives this XML and opens the websocket.
+Step 4: The audio connection opens → plivo_media() in the same file
+The websocket is accepted. parse_telephony_websocket() (from Pipecat) reads Plivo's first start message to get call_id and stream_id.
+stream_token.verify() checks the token matches this call and hasn't expired. If anything is wrong, it closes the socket with code 1008. This stops random people from connecting and burning your Sarvam credits.
+A CallSession is created (call ID, stream ID, language, mode, a log label with no phone number).
+run_bot() in voice/bot.py starts the AI.
+Step 5: The AI pipeline is built → apps/voice/voice/bot.py → build_pipeline()
+
+Audio flows through these pieces in order:
+
+transport.input() receives audio from Plivo. The PlivoFrameSerializer converts Plivo's µ-law 8 kHz audio into the format Pipecat uses.
+SarvamSTTService turns speech into text using model saaras:v4, in the chosen language.
+user_aggregator collects what the customer said. The Silero VAD inside it detects when they start and stop speaking. When they stop, it sends the full sentence to the LLM. If they talk while the bot is speaking (barge-in), it cuts the bot's audio.
+The LLM comes from live_llm_provider() in packages/shared/providers/llm.py. It picks Sarvam, OpenAI or Anthropic based on your .env (default sarvam-105b-conversations). Its instructions come from test_system_prompt() in voice/prompts.py: be an AI, speak one language, short replies, no invented facts.
+SarvamTTSService turns the reply into speech (bulbul:v3, voice shubh), directly at 8 kHz so no conversion is needed.
+transport.output() sends the audio back to Plivo, and so to the customer's phone.
+assistant_aggregator saves what the bot said into the conversation history (LLMContext), so the LLM remembers the conversation.
+
+It also attaches TurnLatencyLogger (from voice/latency.py) to measure speed, and in test mode TranscriptionLogObserver, which prints what the customer said.
+
+Step 6: The conversation → event handlers in run_bot()
+on_client_connected: the moment audio connects, the bot speaks TEST_GREETINGS[lang] word for word ("नमस्ते! मैं PropCall की AI असिस्टेंट हूँ, कोई इंसान नहीं…"). It's fixed text, not LLM output, so the AI disclosure is guaranteed to be the first thing said.
+Then the loop repeats: customer speaks → STT → LLM → TTS → customer hears the reply.
+TurnLatencyLogger prints [latency] … user-stop -> first bot audio = 850 ms [OK] for each turn (target under 1000 ms), plus a breakdown of how long STT, LLM and TTS each took.
+Step 7: The call ends. There are four ways:
+Customer silent: on_user_turn_idle fires after SILENCE_TIMEOUT_S (10 s). The first time, it asks "क्या आप मुझे सुन पा रहे हैं?". The second time, it calls say_goodbye_and_end().
+Too long: the hard_limit() task waits MAX_CALL_DURATION_S (360 s), then calls say_goodbye_and_end(). Plivo's own 180 s time_limit on test calls also applies, so test calls end earlier.
+say_goodbye_and_end() speaks _GOODBYE[lang], then sends an EndFrame. That lets the goodbye audio finish, and then the Plivo serializer hangs up the call through Plivo's API. The ending flag makes sure it only runs once.
+Customer hangs up: on_client_disconnected fires and runner.cancel() stops the pipeline.
+
+In all cases, the finally block cancels the timer and prints the latency summary (p50, p90, max, number of slow turns).
+
+Step 8: Plivo reports the result → plivo_status()
+Plivo POSTs to /plivo/status for stream events and for the final hangup (status, duration, hangup cause).
+Right now it only logs this. Line 112 says it plainly: saving to the calls table and starting the post-call job come later.
+Other pieces already built but not used in the call yet
+plivo_transfer() + PlivoProvider.transfer(): for handing the call to a human. The agent's number is encrypted in the URL (Fernet) so it doesn't show in logs. Ready for Prompt 11.
+start_recording() / get_recording(): written but never called, so calls are not recorded yet. That comes in Prompt 6.
+mask_phone(): hides the middle digits of numbers in every log line.
+packages/shared/db/repositories.py: all the database functions, but the voice bot doesn't use the database yet. It doesn't know which lead, org or project it's calling.
+What's missing before this is a real sales call
+No project knowledge. The bot has a generic chat prompt, not your builder's project details (Prompt 4).
+No language question or lock. The language comes from the --lang flag, not from asking the customer (Prompt 4).
+No tools. It can't book a site visit, schedule a callback or transfer (Prompt 4).
+No recording, transcript saving or summary (Prompts 6 and 8).
+Nothing is saved to the database after the call (Prompt 8).
+Your next step
+
+Before Prompt 4, make 15–20 test calls in all three languages (lang=mr, lang=hi, lang=en). Look at two things:
+
+Latency lines: if most turns say SLOW, fix that first. Check the breakdown to see if STT, LLM or TTS is the slow part.
+Marathi voice quality: if shubh sounds unnatural in Marathi, try other Bulbul speakers through SARVAM_TTS_SPEAKER.
